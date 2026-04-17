@@ -28,43 +28,30 @@ if (php_sapi_name() !== 'cli') {
 // Get command line arguments
 $args = array_slice($argv, 1);
 
-// Helper function to print formatted output
-function printResult($title, $data, $success = true) {
-    $color = $success ? "\033[32m" : "\033[31m";  // Green or Red
+function printResult($title, $data, $ok = true) {
+    $color = $ok ? "\033[32m" : "\033[31m";
     $reset = "\033[0m";
-    
     echo "\n{$color}=== {$title} ==={$reset}\n";
-    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    echo json_encode($data, JSON_PRETTY_PRINT) . "\n";
 }
 
-// Helper function to print usage
 function printUsage() {
-    echo "╔════════════════════════════════════════════════════════════════════╗\n";
-    echo "║        Stripe API Test Tool - Command Line Interface              ║\n";
-    echo "╚════════════════════════════════════════════════════════════════════╝\n\n";
-    echo "USAGE:\n";
-    echo "  php test_api.php [command] [options]\n\n";
-    echo "COMMANDS:\n\n";
-    echo "  1. Create Payment Intent\n";
-    echo "     php test_api.php create-intent <amount> [currency] [description]\n";
-    echo "     Example: php test_api.php create-intent 5000 usd \"Test\"\n\n";
-    echo "  2. Get Payment Intent\n";
-    echo "     php test_api.php get-intent <payment_intent_id>\n";
-    echo "     Example: php test_api.php get-intent pi_1234567890\n\n";
-    echo "  3. Confirm Payment Intent\n";
-    echo "     php test_api.php confirm-intent <payment_intent_id> <payment_method_id>\n";
-    echo "     Example: php test_api.php confirm-intent pi_1234 pm_5678 https://example.com/success\n\n";
-    echo "  4. Create Checkout Session\n";
-    echo "     php test_api.php create-session <amount> [currency] [description]\n";
-    echo "     Example: php test_api.php create-session 5000 usd \"Product Purchase\"\n\n";
-    echo "  5. Test Configuration\n";
-    echo "     php test_api.php test-config\n\n";
-    echo "  6. Show Help\n";
-    echo "     php test_api.php help\n\n";
-    echo "NOTES:\n";
-    echo "  - Amounts are in cents (e.g., 5000 = \$50.00)\n";
-    echo "  - Currency defaults to 'usd'\n";
-    echo "  - Check logs/stripe_api.log for API details\n";
+    echo "\n╔════════════════════════════════════╗\n";
+    echo "║  Stripe API Test Tool              ║\n";
+    echo "╚════════════════════════════════════╝\n\n";
+    echo "USAGE:\n  php test_api.php [command] [options]\n\n";
+    echo "COMMANDS:\n";
+    echo "  create-intent <amount> [currency] [desc]\n";
+    echo "  get-intent <payment_intent_id>\n";
+    echo "  confirm-intent <id> <method> [url]\n";
+    echo "  create-session <amount> [currency] [desc]\n";
+    echo "  test-config\n";
+    echo "  help\n\n";
+    echo "EXAMPLES:\n";
+    echo "  php test_api.php create-intent 5000 usd \"Test\"\n";
+    echo "  php test_api.php test-config\n\n";
+    echo "Amounts in cents: 5000 = \$50.00\n";
+    echo "Logs: " . LOG_FILE_PATH . "\n";
 }
 
 // Verify configuration
@@ -126,85 +113,52 @@ switch ($command) {
         }
         break;
     
-    // ===================================================================
-    // GET PAYMENT INTENT
-    // ===================================================================
     case 'get-intent':
     case 'get-payment-intent':
-        $paymentIntentId = $args[1] ?? null;
-        
-        if (empty($paymentIntentId)) {
-            die("❌ Please provide a Payment Intent ID\n");
-        }
-        
-        echo "Retrieving Payment Intent: $paymentIntentId...\n";
+        $piId = $args[1] ?? null;
+        if (!$piId) die("❌ Provide Payment Intent ID\n");
         
         try {
             $client = new StripeClient(STRIPE_SECRET_KEY, STRIPE_API_BASE_URL, DEBUG_MODE, LOG_FILE_PATH);
-            $response = $client->getPaymentIntent($paymentIntentId);
+            $res = $client->getPaymentIntent($piId);
             
-            if ($response['success']) {
-                $data = $response['data'];
-                $output = array(
+            if ($res['success']) {
+                $data = $res['data'];
+                $out = array(
                     'id' => $data['id'],
                     'status' => $data['status'],
-                    'amount' => $data['amount'] . ' ' . strtoupper($data['currency']),
-                    'payment_method' => $data['payment_method'] ?? 'none',
-                    'created' => date('Y-m-d H:i:s', $data['created'])
+                    'amount' => number_format($data['amount']/100, 2),
+                    'currency' => strtoupper($data['currency'])
                 );
-                
-                if (!empty($data['charges']['data'])) {
-                    $charge = $data['charges']['data'][0];
-                    $output['charge_id'] = $charge['id'];
-                    $output['charge_status'] = $charge['status'];
-                }
-                
-                printResult('Payment Intent Details ✓', $output, true);
+                printResult('Payment Intent Details', $out);
             } else {
-                printResult('Error', $response['error'], false);
+                printResult('Error', $res['error'], false);
             }
         } catch (Exception $e) {
-            printResult('Exception', array('error' => $e->getMessage()), false);
+            printResult('Error', ['msg' => $e->getMessage()], false);
         }
         break;
     
-    // ===================================================================
-    // CONFIRM PAYMENT INTENT
-    // ===================================================================
     case 'confirm-intent':
     case 'confirm-payment-intent':
-        $paymentIntentId = $args[1] ?? null;
-        $paymentMethodId = $args[2] ?? null;
-        $returnUrl = $args[3] ?? '';
+        $piId = $args[1] ?? null;
+        $pmId = $args[2] ?? null;
+        $url = $args[3] ?? '';
         
-        if (empty($paymentIntentId) || empty($paymentMethodId)) {
-            die("❌ Please provide Payment Intent ID and Payment Method ID\n");
-        }
-        
-        echo "Confirming Payment Intent: $paymentIntentId...\n";
-        echo "  With payment method: $paymentMethodId\n";
+        if (!$piId || !$pmId) die("❌ Provide Payment Intent ID and Method ID\n");
         
         try {
             $client = new StripeClient(STRIPE_SECRET_KEY, STRIPE_API_BASE_URL, DEBUG_MODE, LOG_FILE_PATH);
-            $response = $client->confirmPaymentIntent($paymentIntentId, $paymentMethodId, $returnUrl);
+            $res = $client->confirmPaymentIntent($piId, $pmId, $url);
             
-            if ($response['success']) {
-                $data = $response['data'];
-                printResult(
-                    'Payment Confirmed ✓',
-                    array(
-                        'id' => $data['id'],
-                        'status' => $data['status'],
-                        'amount' => $data['amount'],
-                        'payment_method' => $data['payment_method']
-                    ),
-                    true
-                );
+            if ($res['success']) {
+                $d = $res['data'];
+                printResult('Payment Confirmed', ['id' => $d['id'], 'status' => $d['status']]);
             } else {
-                printResult('Error', $response['error'], false);
+                printResult('Error', $res['error'], false);
             }
         } catch (Exception $e) {
-            printResult('Exception', array('error' => $e->getMessage()), false);
+            printResult('Error', ['msg' => $e->getMessage()], false);
         }
         break;
     
@@ -259,42 +213,30 @@ switch ($command) {
         }
         break;
     
-    // ===================================================================
-    // TEST CONFIGURATION
-    // ===================================================================
     case 'test-config':
     case 'test':
-        echo "Testing Stripe Configuration...\n\n";
+        $ok = true;
+        $checks = [
+            'Secret Key' => !empty(STRIPE_SECRET_KEY) && strpos(STRIPE_SECRET_KEY, 'sk_test_') === 0,
+            'Publishable Key' => !empty(STRIPE_PUBLISHABLE_KEY) && strpos(STRIPE_PUBLISHABLE_KEY, 'pk_test_') === 0,
+            'cURL' => extension_loaded('curl'),
+            'JSON' => extension_loaded('json'),
+        ];
         
-        $checks = array(
-            'Secret Key Configured' => !empty(STRIPE_SECRET_KEY) && STRIPE_SECRET_KEY !== 'sk_test_your_secret_key_here',
-            'Publishable Key Configured' => !empty(STRIPE_PUBLISHABLE_KEY) && STRIPE_PUBLISHABLE_KEY !== 'pk_test_your_publishable_key_here',
-            'cURL Enabled' => extension_loaded('curl'),
-            'JSON Extension Enabled' => extension_loaded('json'),
-            'Log Directory Writable' => is_writable(dirname(LOG_FILE_PATH)),
-            'Using Test Keys' => strpos(STRIPE_SECRET_KEY, 'sk_test_') === 0,
-        );
-        
-        $allPassed = true;
-        foreach ($checks as $check => $result) {
-            $status = $result ? "\033[32m✓\033[0m" : "\033[31m✕\033[0m";
-            echo "  $status $check\n";
-            if (!$result) $allPassed = false;
+        echo "\n";
+        foreach ($checks as $name => $pass) {
+            $s = $pass ? "\033[32m✓\033[0m" : "\033[31m✕\033[0m";
+            echo "  $s $name\n";
+            if (!$pass) $ok = false;
         }
         
         echo "\n";
-        if ($allPassed) {
-            echo "\033[32m✅ All checks passed! Configuration looks good.\033[0m\n";
-            
-            echo "\n📝 Test commands to try:\n";
-            echo "  php test_api.php create-intent 5000 usd \"Test Order\"\n";
-            echo "  php test_api.php create-session 5000 usd \"Test Product\"\n";
-            
+        if ($ok) {
+            echo "\033[32m✅ All checks passed!\033[0m\n\n";
+            echo "Try: php test_api.php create-intent 5000 usd \"Test\"\n";
         } else {
-            echo "\033[31m⚠️  Some checks failed. Please review configuration.\033[0m\n";
-            echo "See SETUP.md for troubleshooting help.\n";
+            echo "\033[31m❌ Some checks failed\033[0m\n";
         }
-        
         echo "\n";
         break;
     

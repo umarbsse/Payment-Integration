@@ -274,69 +274,34 @@
     </div>
 
     <script>
-        // ===================================================================
-        // STRIPE CHECKOUT SESSION IMPLEMENTATION
-        // ===================================================================
-        
         const form = document.getElementById('checkout-form');
-        const submitButton = document.getElementById('submit-button');
-        const loadingDiv = document.getElementById('loading');
-        const errorDiv = document.getElementById('error-message');
+        const btn = document.getElementById('submit-button');
+        const loading = document.getElementById('loading');
+        const err = document.getElementById('error-message');
         
-        // Handle form submission
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            
-            // Disable submit button and show loading
-            submitButton.disabled = true;
-            loadingDiv.style.display = 'block';
-            errorDiv.style.display = 'none';
+            btn.disabled = true;
+            loading.style.display = 'block';
+            err.style.display = 'none';
             
             try {
-                // STEP 1: Get form data
-                const formData = new FormData(form);
-                
-                // STEP 2: Send to backend to create Checkout Session
-                console.log('Creating Checkout Session...');
-                
-                const response = await fetch('checkout_session.php', {
+                const res = await fetch('checkout_session.php', {
                     method: 'POST',
-                    body: formData
+                    body: new FormData(form)
                 });
                 
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
+                const data = await res.json();
+                if (!data.success) throw new Error(data.error);
                 
-                const data = await response.json();
-                
-                // STEP 3: Handle response
-                if (!data.success) {
-                    throw new Error(data.error || 'Failed to create checkout session');
-                }
-                
-                console.log('Session created:', data.session_id);
-                
-                // STEP 4: Redirect to Stripe's hosted checkout
-                // The session.url is provided by Stripe and handles the entire payment flow
-                console.log('Redirecting to:', data.url);
                 window.location.href = data.url;
-                
             } catch (error) {
-                console.error('Error:', error);
-                
-                // Show error message
-                errorDiv.textContent = '❌ ' + (error.message || 'An error occurred');
-                errorDiv.style.display = 'block';
-                
-                // Re-enable submit button
-                submitButton.disabled = false;
-                loadingDiv.style.display = 'none';
+                err.textContent = '❌ ' + (error.message || 'Error');
+                err.style.display = 'block';
+                btn.disabled = false;
+                loading.style.display = 'none';
             }
         });
-        
-        // Log when page loads
-        console.log('Checkout page ready - Click "Go to Checkout" to proceed');
     </script>
 </body>
 </html>

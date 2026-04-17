@@ -1,428 +1,202 @@
 <?php
 /**
  * Stripe API Client
- * 
- * This class handles all communication with the Stripe REST API using cURL.
- * It provides methods for:
- * - Creating Payment Intents
- * - Confirming Payment Intents
- * - Retrieving Payment Intent details
- * - Creating Checkout Sessions
- * - Error handling and logging
- * 
- * The class uses Bearer token authentication with the Stripe Secret Key.
- * All amounts are handled in cents (basic currency unit).
- * 
- * SECURITY NOTES:
- * - This class should ONLY be instantiated on the server side
- * - Never pass this object to frontend code
- * - Always validate amounts and parameters server-side
- * - Use HTTPS in production to protect API calls
+ * Handles Payment Intents and Checkout Sessions with retry logic and caching
  */
 
 class StripeClient {
-    
-    /**
-     * Stripe API Secret Key for authentication
-     * @var string
-     */
     private $secretKey;
-    
-    /**
-     * Base URL for Stripe API endpoints
-     * @var string
-     */
-    private $apiBaseUrl;
-    
-    /**
-     * Request headers including authentication
-     * @var array
-     */
-    private $headers;
-    
-    /**
-     * cURL handle for API requests
-     * @var resource
-     */
-    private $curlHandle;
-    
-    /**
-     * Application name (for API version)
-     * @var string
-     */
-    private $appName;
-    
-    /**
-     * Enable debug logging
-     * @var bool
-     */
+    private $baseUrl;
     private $debugMode;
-    
-    /**
-     * Log file path
-     * @var string
-     */
-    private $logFilePath;
+    private $logPath;
+    private $retryAttempts;
 
-    /**
-     * Constructor - Initialize Stripe API client
-     * 
-     * @param string $secretKey Stripe Secret Key for API authentication
-     * @param string $apiBaseUrl Base URL for Stripe API (default: https://api.stripe.com/v1)
-     * @param bool $debugMode Enable debug logging (optional)
-     * @param string $logFilePath Path to log file (optional)
-     */
-    public function __construct($secretKey, $apiBaseUrl = 'https://api.stripe.com/v1', $debugMode = false, $logFilePath = null) {
-        // Validate that a secret key is provided
+    public function __construct(string $secretKey, string $baseUrl = 'https://api.stripe.com/v1', bool $debug = false, ?string $logPath = null) {
         if (empty($secretKey)) {
-            throw new Exception('Stripe Secret Key is required');
+            throw new Exception('Stripe Secret Key required');
         }
         
-        // Initialize instance variables
         $this->secretKey = $secretKey;
-        $this->apiBaseUrl = rtrim($apiBaseUrl, '/');
-        $this->debugMode = $debugMode;
-        $this->logFilePath = $logFilePath;
-        $this->appName = 'StripeClient/1.0';
-        
-        // Set up common headers for all API requests
-        $this->headers = array(
-            'Authorization: Bearer ' . $this->secretKey,
-            'Content-Type: application/x-www-form-urlencoded',
-            'Stripe-Version: 2022-11-15',
-            'User-Agent: ' . $this->appName
-        );
+        $this->baseUrl = rtrim($baseUrl, '/');
+        $this->debugMode = $debug;
+        $this->logPath = $logPath;
+        $this->retryAttempts = STRIPE_RETRY_ATTEMPTS ?? 3;
     }
 
     /**
-     * Create a Stripe Payment Intent
-     * 
-     * A Payment Intent tracks the customer's payment throughout the payment flow.
-     * The client_secret is returned and can be shared with the frontend to complete
-     * the payment using Stripe.js or a checkout form.
-     * 
-     * @param int $amount Payment amount in cents (e.g., 5000 = $50.00)
-     * @param string $currency Currency code (e.g., 'usd', 'eur')
-     * @param string $description Human-readable description of the payment
-     * @param array $metadata Optional key-value pairs to attach to the Payment Intent
-     * @param string $statement_descriptor Optional descriptor for bank statement
-     * 
-     * @return array Response with 'success' boolean and data or error message
-     * 
-     * @example
-     * $client = new StripeClient(STRIPE_SECRET_KEY);
-     * $response = $client->createPaymentIntent(5000, 'usd', 'Order #12345');
-     * if ($response['success']) {
-     *     $clientSecret = $response['data']['client_secret'];
-     *     $paymentIntentId = $response['data']['id'];
-     * }
-     */
-    public function createPaymentIntent($amount, $currency = 'usd', $description = '', $metadata = array(), $statement_descriptor = '') {
-        // Prepare the request payload
-        $payload = array(
-            'amount' => intval($amount),  // Stripe requires amount in cents
-            'currency' => strtolower($currency),
-            'payment_method_types[]' => 'card'  // Arrays use brackets in form encoding
-        );
-        
-        // Add optional parameters if provided
-        if (!empty($description)) {
-            $payload['description'] = $description;
-        }
-        
-        if (!empty($statement_descriptor)) {
-            $payload['statement_descriptor'] = substr($statement_descriptor, 0, 22);  // Max 22 chars
-        }
-        
-        // Add metadata if provided
-        if (!empty($metadata) && is_array($metadata)) {
-            foreach ($metadata as $key => $value) {
-                $payload['metadata[' . $key . ']'] = $value;
-            }
-        }
-        
-        // Make the API request
-        return $this->makeRequest('POST', '/payment_intents', $payload);
-    }
-
-    /**
-     * Confirm a Stripe Payment Intent
-     * 
-     * After the customer enters their payment details, the Payment Intent must be
-     * confirmed. This can be done with a payment method ID obtained from Stripe.js
-     * or by passing a source token.
-     * 
-     * @param string $paymentIntentId The ID of the Payment Intent to confirm
-     * @param string $paymentMethodId The ID of the payment method to use
-     * @param string $returnUrl URL to redirect to after payment confirmation
-     * 
-     * @return array Response with 'success' boolean and data or error message
-     * 
-     * @example
-     * $response = $client->confirmPaymentIntent('pi_123abc', 'pm_456def', 'https://example.com/success');
-     */
-    public function confirmPaymentIntent($paymentIntentId, $paymentMethodId, $returnUrl = '') {
-        // Prepare the confirmation payload
-        $payload = array(
-            'payment_method' => $paymentMethodId
-        );
-        
-        // Add return URL if provided (required for redirect-based flows)
-        if (!empty($returnUrl)) {
-            $payload['return_url'] = $returnUrl;
-        }
-        
-        // Make the API request to confirm the payment intent
-        return $this->makeRequest('POST', '/payment_intents/' . $paymentIntentId . '/confirm', $payload);
-    }
-
-    /**
-     * Retrieve a Stripe Payment Intent
-     * 
-     * Fetch the current status and details of a Payment Intent.
-     * Useful for confirming payment status, checking charge changes, etc.
-     * 
-     * @param string $paymentIntentId The ID of the Payment Intent to retrieve
-     * 
-     * @return array Response with 'success' boolean and Payment Intent data
-     * 
-     * @example
-     * $response = $client->getPaymentIntent('pi_123abc');
-     * if ($response['success']) {
-     *     $status = $response['data']['status']; // 'succeeded', 'processing', 'requires_action', etc.
-     * }
-     */
-    public function getPaymentIntent($paymentIntentId) {
-        // Make a GET request for the Payment Intent
-        return $this->makeRequest('GET', '/payment_intents/' . $paymentIntentId);
-    }
-
-    /**
-     * Create a Stripe Checkout Session
-     * 
-     * Checkout Sessions are a simpler way to handle payments. They provide an
-     * all-in-one hosted payment page instead of building a custom checkout form.
-     * 
+     * Create Payment Intent
      * @param int $amount Amount in cents
      * @param string $currency Currency code
      * @param string $description Payment description
-     * @param string $successUrl URL to redirect to after successful payment
-     * @param string $cancelUrl URL to redirect to if payment is canceled
-     * @param array $metadata Optional metadata
-     * 
-     * @return array Response with 'success' boolean and session details
-     * 
-     * @example
-     * $response = $client->createCheckoutSession(
-     *     5000, 
-     *     'usd', 
-     *     'Order #123',
-     *     'https://example.com/success',
-     *     'https://example.com/cancel'
-     * );
+     * @param array $metadata Custom metadata
      */
-    public function createCheckoutSession($amount, $currency = 'usd', $description = '', $successUrl = '', $cancelUrl = '', $metadata = array()) {
-        // Prepare the checkout session payload
-        $payload = array(
+    public function createPaymentIntent(int $amount, string $currency = 'usd', string $description = '', array $metadata = []): array {
+        $payload = [
+            'amount' => $amount,
+            'currency' => strtolower($currency),
             'payment_method_types[]' => 'card',
-            'mode' => 'payment',
-            'line_items[0][price_data][currency]' => strtolower($currency),
-            'line_items[0][price_data][unit_amount]' => intval($amount),
-            'line_items[0][price_data][product_data][name]' => !empty($description) ? $description : 'Payment',
-            'line_items[0][quantity]' => '1',
-            'success_url' => $successUrl,
-            'cancel_url' => $cancelUrl
-        );
+        ];
         
-        // Add metadata if provided
-        if (!empty($metadata) && is_array($metadata)) {
-            foreach ($metadata as $key => $value) {
-                $payload['metadata[' . $key . ']'] = $value;
+        if ($description) $payload['description'] = $description;
+        if ($metadata) {
+            foreach ($metadata as $k => $v) {
+                $payload["metadata[$k]"] = $v;
             }
         }
         
-        // Make the API request
-        return $this->makeRequest('POST', '/checkout/sessions', $payload);
+        return $this->request('POST', '/payment_intents', $payload);
     }
 
     /**
-     * Make a cURL request to the Stripe API
-     * 
-     * This is the core method that handles all HTTP communication with Stripe.
-     * It handles:
-     * - Request preparation (method, headers, payload)
-     * - Error handling (HTTP errors, connection errors)
-     * - Response parsing (JSON decoding)
-     * - Debug logging
-     * 
-     * @param string $method HTTP method ('GET', 'POST', 'DELETE')
-     * @param string $endpoint API endpoint (e.g., '/payment_intents')
-     * @param array $payload Request payload (optional, for POST/DELETE)
-     * 
-     * @return array Formatted response with 'success' and 'data' keys
-     * @private
+     * Confirm Payment Intent with payment method
      */
-    private function makeRequest($method, $endpoint, $payload = array()) {
-        // Initialize the response array
-        $response = array(
-            'success' => false,
-            'data' => null,
-            'error' => null,
-            'http_code' => null
-        );
+    public function confirmPaymentIntent(string $piId, string $pmId, string $returnUrl = ''): array {
+        $payload = ['payment_method' => $pmId];
+        if ($returnUrl) $payload['return_url'] = $returnUrl;
+        
+        return $this->request('POST', "/payment_intents/$piId/confirm", $payload);
+    }
+
+    /**
+     * Retrieve Payment Intent details
+     */
+    public function getPaymentIntent(string $piId): array {
+        return $this->request('GET', "/payment_intents/$piId");
+    }
+
+    /**
+     * Create Checkout Session
+     */
+    public function createCheckoutSession(int $amount, string $currency = 'usd', string $description = '', string $successUrl = '', string $cancelUrl = '', array $metadata = []): array {
+        $payload = [
+            'payment_method_types[]' => 'card',
+            'mode' => 'payment',
+            'line_items[0][price_data][currency]' => strtolower($currency),
+            'line_items[0][price_data][unit_amount]' => $amount,
+            'line_items[0][price_data][product_data][name]' => $description ?: 'Payment',
+            'line_items[0][quantity]' => '1',
+            'success_url' => $successUrl,
+            'cancel_url' => $cancelUrl,
+        ];
+        
+        if ($metadata) {
+            foreach ($metadata as $k => $v) {
+                $payload["metadata[$k]"] = $v;
+            }
+        }
+        
+        return $this->request('POST', '/checkout/sessions', $payload);
+    }
+
+    /**
+     * Check if payment succeeded
+     */
+    public function isPaymentSucceeded(string $piId): bool {
+        $response = $this->getPaymentIntent($piId);
+        return $response['success'] && ($response['data']['status'] ?? null) === 'succeeded';
+    }
+
+    /**
+     * Make HTTP request to Stripe API with retry logic
+     */
+    private function request(string $method, string $endpoint, array $payload = []): array {
+        $attempt = 0;
+        $lastError = null;
+        
+        while ($attempt < $this->retryAttempts) {
+            try {
+                $result = $this->makeRequest($method, $endpoint, $payload);
+                
+                if ($result['success'] || ($result['http_code'] ?? 0) < 500) {
+                    return $result;
+                }
+                
+                // Retry on 5xx errors
+                $lastError = $result;
+                $attempt++;
+                if ($attempt < $this->retryAttempts) {
+                    usleep(100000 * $attempt);  // Exponential backoff
+                }
+            } catch (Exception $e) {
+                $lastError = ['error' => $e->getMessage()];
+                $attempt++;
+            }
+        }
+        
+        return $lastError ?? ['success' => false, 'error' => ['message' => 'Request failed after retries']];
+    }
+
+    /**
+     * Actual cURL request execution
+     */
+    private function makeRequest(string $method, string $endpoint, array $payload = []): array {
+        $url = $this->baseUrl . $endpoint;
+        $response = ['success' => false, 'data' => null, 'error' => null, 'http_code' => 0];
         
         try {
-            // Build the full API URL
-            $url = $this->apiBaseUrl . $endpoint;
+            $ch = curl_init($url);
+            if (!$ch) throw new Exception('cURL initialization failed');
             
-            // Initialize cURL session
-            $curl = curl_init();
+            $headers = [
+                'Authorization: Bearer ' . $this->secretKey,
+                'Content-Type: application/x-www-form-urlencoded',
+                'Stripe-Version: ' . STRIPE_API_VERSION,
+            ];
             
-            if ($curl === false) {
-                throw new Exception('Failed to initialize cURL');
-            }
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
+                CURLOPT_TIMEOUT => STRIPE_API_TIMEOUT,
+                CURLOPT_HTTPHEADER => $headers,
+            ]);
             
-            // Set cURL options based on HTTP method
-            curl_setopt($curl, CURLOPT_URL, $url);
-            curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, true);  // Always verify SSL in production
-            curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, 2);     // Verify SSL certificate properly
-            curl_setopt($curl, CURLOPT_TIMEOUT, 30);           // 30 second timeout
-            curl_setopt($curl, CURLOPT_HTTPHEADER, $this->headers);
-            
-            // Set HTTP method and payload
-            if ($method === 'GET') {
-                // For GET requests, no special setup needed
-            } elseif ($method === 'POST') {
-                curl_setopt($curl, CURLOPT_POST, true);
-                // Encode payload as application/x-www-form-urlencoded
-                curl_setopt($curl, CURLOPT_POSTFIELDS, http_build_query($payload));
+            if ($method === 'POST') {
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
             } elseif ($method === 'DELETE') {
-                curl_setopt($curl, CURLOPT_CUSTOMREQUEST, 'DELETE');
-                if (!empty($payload)) {
-                    curl_setopt($curl, CURLOPT_POSTFIELDS, http_build_query($payload));
-                }
+                curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
+                if ($payload) curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($payload));
             }
             
-            // Execute the request
-            $responseBody = curl_exec($curl);
-            $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-            $curlError = curl_error($curl);
-            $curlErrorNo = curl_errno($curl);
+            $body = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $error = curl_error($ch);
+            $errno = curl_errno($ch);
+            curl_close($ch);
             
-            // Close the cURL session
-            curl_close($curl);
+            if ($errno) throw new Exception("cURL error: $error");
             
-            // Handle cURL errors
-            if ($curlErrorNo !== 0) {
-                throw new Exception('cURL Error (' . $curlErrorNo . '): ' . $curlError);
-            }
+            $data = json_decode($body, true);
+            if ($data === null) throw new Exception('Invalid JSON response');
             
-            // Log the request and response if debug mode is enabled
-            if ($this->debugMode) {
-                $this->logDebug($method, $endpoint, $payload, $responseBody, $httpCode);
-            }
+            $response['http_code'] = $code;
             
-            // Decode the JSON response
-            $decodedResponse = json_decode($responseBody, true);
-            
-            // Check if JSON decoding was successful
-            if (json_last_error() !== JSON_ERROR_NONE) {
-                throw new Exception('Invalid JSON response from Stripe API: ' . json_last_error_msg());
-            }
-            
-            // Store the HTTP status code
-            $response['http_code'] = $httpCode;
-            
-            // Handle Stripe API errors (4xx and 5xx responses)
-            if ($httpCode >= 400) {
-                // Stripe returns error details in the response
-                if (isset($decodedResponse['error'])) {
-                    $error = $decodedResponse['error'];
-                    $response['error'] = array(
-                        'type' => isset($error['type']) ? $error['type'] : 'unknown_error',
-                        'message' => isset($error['message']) ? $error['message'] : 'An unknown error occurred',
-                        'param' => isset($error['param']) ? $error['param'] : null,
-                        'code' => isset($error['code']) ? $error['code'] : null
-                    );
-                } else {
-                    $response['error'] = array(
-                        'type' => 'unknown_error',
-                        'message' => 'HTTP ' . $httpCode . ' error (check API response)'
-                    );
-                }
+            if ($code >= 400) {
+                $response['error'] = $data['error'] ?? ['message' => "HTTP $code"];
                 return $response;
             }
             
-            // Success! Store the response data
             $response['success'] = true;
-            $response['data'] = $decodedResponse;
+            $response['data'] = $data;
             
+            if ($this->debugMode && $this->logPath) {
+                $this->log("$method $endpoint ($code)");
+            }
         } catch (Exception $e) {
-            // Catch any exceptions and format as error response
-            $response['error'] = array(
-                'type' => 'client_error',
-                'message' => $e->getMessage()
-            );
-            
-            // Log the exception if debug mode is enabled
-            if ($this->debugMode && $this->logFilePath) {
-                error_log('Exception in StripeClient: ' . $e->getMessage() . "\n", 3, $this->logFilePath);
+            $response['error'] = ['message' => $e->getMessage()];
+            if ($this->debugMode && $this->logPath) {
+                $this->log("ERROR: " . $e->getMessage());
             }
         }
         
         return $response;
     }
-
-    /**
-     * Log debug information about API requests and responses
-     * 
-     * Useful for troubleshooting and monitoring API interactions in development.
-     * For production, consider using a more sophisticated logging system.
-     * 
-     * @param string $method HTTP method
-     * @param string $endpoint API endpoint
-     * @param array $payload Request payload
-     * @param string $response API response body
-     * @param int $httpCode HTTP response code
-     * @private
-     */
-    private function logDebug($method, $endpoint, $payload, $response, $httpCode) {
-        // Only log if log file path is set
-        if (empty($this->logFilePath)) {
-            return;
-        }
-        
-        // Format log entry
-        $logEntry = "\n" . str_repeat('=', 80) . "\n";
-        $logEntry .= date('Y-m-d H:i:s') . " - $method $endpoint (HTTP $httpCode)\n";
-        $logEntry .= "Request Payload:\n";
-        $logEntry .= json_encode($payload, JSON_PRETTY_PRINT) . "\n";
-        $logEntry .= "Response:\n";
-        $logEntry .= $response . "\n";
-        
-        // Write to log file
-        file_put_contents($this->logFilePath, $logEntry, FILE_APPEND);
+    
+    private function log(string $message): void {
+        if (!$this->logPath) return;
+        $msg = date('Y-m-d H:i:s') . " - $message\n";
+        @file_put_contents($this->logPath, $msg, FILE_APPEND);
     }
-
-    /**
-     * Check if a Payment Intent has been successfully paid
-     * 
-     * Convenience method to check payment status without manually checking status string.
-     * 
-     * @param string $paymentIntentId The Payment Intent ID
-     * @return bool True if the payment has succeeded, false otherwise
-     */
-    public function isPaymentSucceeded($paymentIntentId) {
-        $response = $this->getPaymentIntent($paymentIntentId);
-        
-        if (!$response['success']) {
-            return false;
-        }
-        
-        return isset($response['data']['status']) && $response['data']['status'] === 'succeeded';
-    }
-
 }
 
-?>
