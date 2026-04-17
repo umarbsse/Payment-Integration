@@ -39,45 +39,32 @@ function printResult($title, $data, $success = true) {
 
 // Helper function to print usage
 function printUsage() {
-    echo <<<USAGE
-╔════════════════════════════════════════════════════════════════════╗
-║        Stripe API Test Tool - Command Line Interface              ║
-╚════════════════════════════════════════════════════════════════════╝
-
-USAGE:
-  php test_api.php [command] [options]
-
-COMMANDS:
-
-  1. Create Payment Intent
-     php test_api.php create-intent <amount> [currency] [description]
-     Example: php test_api.php create-intent 5000 usd "Order #123"
-     
-  2. Get Payment Intent
-     php test_api.php get-intent <payment_intent_id>
-     Example: php test_api.php get-intent pi_1234567890
-     
-  3. Confirm Payment Intent
-     php test_api.php confirm-intent <payment_intent_id> <payment_method_id>
-     Example: php test_api.php confirm-intent pi_1234 pm_5678 https://example.com/success
-     
-  4. Create Checkout Session
-     php test_api.php create-session <amount> [currency] [description]
-     Example: php test_api.php create-session 5000 usd "Product Purchase"
-     
-  5. Test Configuration
-     php test_api.php test-config
-     
-  6. Show Help
-     php test_api.php help
-
-NOTES:
-  - Amounts are in cents (e.g., 5000 = \$50.00)
-  - Currency defaults to 'usd'
-  - Check logs/stripe_api.log for API details
-
-USAGE;
-    echo "\n";
+    echo "╔════════════════════════════════════════════════════════════════════╗\n";
+    echo "║        Stripe API Test Tool - Command Line Interface              ║\n";
+    echo "╚════════════════════════════════════════════════════════════════════╝\n\n";
+    echo "USAGE:\n";
+    echo "  php test_api.php [command] [options]\n\n";
+    echo "COMMANDS:\n\n";
+    echo "  1. Create Payment Intent\n";
+    echo "     php test_api.php create-intent <amount> [currency] [description]\n";
+    echo "     Example: php test_api.php create-intent 5000 usd \"Test\"\n\n";
+    echo "  2. Get Payment Intent\n";
+    echo "     php test_api.php get-intent <payment_intent_id>\n";
+    echo "     Example: php test_api.php get-intent pi_1234567890\n\n";
+    echo "  3. Confirm Payment Intent\n";
+    echo "     php test_api.php confirm-intent <payment_intent_id> <payment_method_id>\n";
+    echo "     Example: php test_api.php confirm-intent pi_1234 pm_5678 https://example.com/success\n\n";
+    echo "  4. Create Checkout Session\n";
+    echo "     php test_api.php create-session <amount> [currency] [description]\n";
+    echo "     Example: php test_api.php create-session 5000 usd \"Product Purchase\"\n\n";
+    echo "  5. Test Configuration\n";
+    echo "     php test_api.php test-config\n\n";
+    echo "  6. Show Help\n";
+    echo "     php test_api.php help\n\n";
+    echo "NOTES:\n";
+    echo "  - Amounts are in cents (e.g., 5000 = \$50.00)\n";
+    echo "  - Currency defaults to 'usd'\n";
+    echo "  - Check logs/stripe_api.log for API details\n";
 }
 
 // Verify configuration
